@@ -146,3 +146,70 @@ char *encode_dln(char delim, char ***items, size_t *rowlens, size_t numrows)
 	
 	return ret;
 }
+
+//static void APPEND('T *buf, 'T obj, size_t sz);
+#define APPEND(buf, obj, sz) { \
+	if (!obj) abort(errno); \
+	if (sz > 7 && !(sz&(sz-1))) { \
+		void *nbuf = realloc(buf, sizeof(*buf) * sz); \
+		if (!nbuf) abort(errno); \
+		buf = (typeof(buf)) nbuf; \
+	}; \
+	buf[sz] = (typeof(*buf)) obj; \
+}
+
+#define IS_NEWLINE(pos, nl, n2) ((pos[0] == nl) && (!nl2 || pos[-1] == n2))
+
+Dstr **decode_dln(char *input)
+{
+	size_t loc, line;
+	Dstr **lines = malloc(8 * sizeof(Dstr *));
+	char delim = input[0], newline = input[1], n2 = '\0', *last;
+	DStr elem, null_dstr = {NULL, 0};
+	if (newline == '\r') {
+		if (input[2] == '\n') {
+			newline = '\n';
+			n2 = '\r'; //rather search backwards than forwards
+		}
+	} else if (newline != '\n')
+		return NULL; //only three kinds of newline
+
+	switch (delim) {
+		case ':':
+		case ';':
+		case '\t':
+		case '.':
+		case ',':
+		case '|':
+			break; //six kinds of delimiter
+		default:
+			return NULL;
+	}
+	input += 2;
+	for (loc = 0; input[loc]; ++loc) {
+		if (last == &input[loc-1]) {
+			if (input[loc] == '[') { //if longstring
+				TRAVERSE(/* FIXME */)
+			} else if (input[loc] == ']' && *last == newline) {
+				while(!IS_NEWLINE(&input[loc], newline, n2))
+					++loc;
+				last = &input[loc];
+				continue;
+			}
+		}
+		if (IS_NEWLINE(&input[loc], newline, n2)) {
+			APPEND(lines[line-1], null_dstr, line_len);
+			APPEND(lines, malloc(8 * sizeof(Dstr)), line);
+			line += 1;
+			line_len = 0;
+		} else if (input[loc] != delim)
+			continue;
+
+		elem.ptr = &last[1];
+		last = &input[loc];
+		elem.n = (size_t) last - elem.ptr;
+		APPEND(lines[line-1], elem, line_len);
+		line_len += 1;
+	}
+	return lines;
+}
