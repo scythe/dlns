@@ -1,4 +1,36 @@
 
+struct newline {
+	char at;
+	char prev; // '\0' indicates not present
+};
+
+static struct newline read_newline(char *nl_str)
+{
+	struct newline ret = {'\n', '\0'}
+	if ('\n' == *nl_str)
+		return ret;
+	else if (nl_str[1] == '\n' && ((ret.prev = '\r') == *nl_str))
+		return ret;
+	else if ((ret.at = '\r') == *nl_str)
+		return ret;
+	ret.at = '\0';
+	return ret;
+}
+
+static int is_newline(char *pos, struct newline nl)
+{
+	return (pos[0] == nl.at) && (!nl.prev || pos[-1] == nl.prev);
+}
+
+static int invalid_delim(char delim)
+{
+	switch(delim) {
+	case '/': case ';': case ':': case '|': case '\t': case ',': case '.':
+		return 0;
+	default:
+		return EILSEQ;
+	}
+}
 
 static unsigned int ihash(size_t key, int type)
 {
@@ -33,13 +65,13 @@ static unsigned long fast_triangle_root(unsigned long x)
 
 #define TRAVERSE(strin, catch_bracket, catch_default)	\
 {							\
-	char cur_bracket, *_str = _strin;		\
+	char cur_bracket, *_str = strin;		\
 	size_t equals_len;				\
 	for (; *_str; _str++) {				\
 		switch(*_str) {				\
 		case '[':				\
 		case ']':				\
-			//found a quote of length "equals_len"	\
+			/*found a quote of length "equals_len"	*/ \
 			if (cur_bracket == *_str) { 	\
 				catch_bracket;		\
 				/*allow odd-numbered sequences of	\
@@ -68,7 +100,7 @@ static unsigned long fast_triangle_root(unsigned long x)
 	}				\
 }
 
-static size_t longquote(char *str) {
+static size_t longquote(char *str, char delim, struct newline nl) {
 	unsigned long long found_quotes = 0x0, bloom[4];
 	char *found_vals;
 	size_t i, j, halfmax;
@@ -80,7 +112,8 @@ static size_t longquote(char *str) {
 	               else
 	                  for (i = 0; i < 4; ++i)
 	                     bloom[i] |= 1 << ihash(equals_len, i);
-	              }, { found_delim = found_delim ?: *str == delim; });
+	              }, { found_delim = found_delim ?: (
+	                   *str == delim || is_newline(str, nl)); });
 	if (!found_delim)
 		return 0;
 
@@ -121,14 +154,18 @@ static void write_quote(char *stream, size_t len, bool left)
 }
 	
 
-char *encode_dln(char delim, char ***items, size_t *rowlens, size_t numrows)
-{
+char *encode_dln(char delim, char *newline, char ***items, size_t *rowlens,
+                 size_t numrows) {
 	size_t i, j, ***quotes, len = 2;
 	char *ret, *lq = NULL, *rq = NULL;
+	struct newline nl = read_newline(newline);
+	if (!nl.at || invalid_delim(delim))
+		return NULL;
 
 	for (i = 0; i < numrows; ++i)
 		for (j = 0; j < rowlens[i]; ++j)
-			len += strlen(itmes[i][j]) + (quotes[i][j] = longquote(items[i][j])) * 2;
+			len += strlen(itmes[i][j]) + (
+			       quotes[i][j] = longquote(items[i][j])) * 2;
 		
 	ret = calloc(len + 1);
 	len = 0;
@@ -158,58 +195,68 @@ char *encode_dln(char delim, char ***items, size_t *rowlens, size_t numrows)
 	buf[sz] = (typeof(*buf)) obj; \
 }
 
-#define IS_NEWLINE(pos, nl, n2) ((pos[0] == nl) && (!nl2 || pos[-1] == n2))
+static DStr read_longstring(char *ls)
+{
+	size_t quote_len = 2;
+	DStr elem = {NULL, 0};
+	if (ls[1] != '[' && ls[1] != '=') {
+		quote_len = 1;
+	} else {
+		for (; ls[1] == '='; ++ls, ++quote_len);
+		if (ls[1] != '[') {
+			errno = EILSEQ;
+			return elem;
+		}
+	}
+	elem.ptr = ls[2];
+	TRAVERSE(elem.ptr, { 
+		if (equals_len + 2 == quote_len && cur_bracket == ']')
+			elem.n = _str - elem.ptr - quote_len + 1;
+		return elem; }, );
+	elem.ptr = NULL;
+	return elem;
+}
 
 Dstr **decode_dln(char *input)
 {
 	size_t loc, line;
 	Dstr **lines = malloc(8 * sizeof(Dstr *));
-	char delim = input[0], newline = input[1], n2 = '\0', *last;
+	char delim = input[0], *last;
 	DStr elem, null_dstr = {NULL, 0};
-	if (newline == '\r') {
-		if (input[2] == '\n') {
-			newline = '\n';
-			n2 = '\r'; //rather search backwards than forwards
-		}
-	} else if (newline != '\n')
-		return NULL; //only three kinds of newline
-
-	switch (delim) {
-		case ':':
-		case ';':
-		case '\t':
-		case '.':
-		case ',':
-		case '|':
-			break; //six kinds of delimiter
-		default:
-			return NULL;
+	struct newline nl = read_newline(&input[1]);
+	if (!nl.at || invalid_delim(delim)) {
+		errno = EILSEQ;
+		return NULL;
 	}
 	input += 2;
 	for (loc = 0; input[loc]; ++loc) {
 		if (last == &input[loc-1]) {
 			if (input[loc] == '[') { //if longstring
-				TRAVERSE(/* FIXME */)
+				if (!(elem = read_longstring(&input[loc])).ptr)
+					return NULL;
+				APPEND(lines[line-1], elem, line_len);
+				line_len += 1;
+				for(; !is_newline(&input[loc]) &&
+				      input[loc] != delim; ++loc);
 			} else if (input[loc] == ']' && *last == newline) {
-				while(!IS_NEWLINE(&input[loc], newline, n2))
+				while(!is_newline(&input[loc], nl))
 					++loc;
 				last = &input[loc];
-				continue;
 			}
-		}
-		if (IS_NEWLINE(&input[loc], newline, n2)) {
+		} else if (is_newline(&input[loc], nl)) {
 			APPEND(lines[line-1], null_dstr, line_len);
 			APPEND(lines, malloc(8 * sizeof(Dstr)), line);
 			line += 1;
 			line_len = 0;
-		} else if (input[loc] != delim)
-			continue;
-
-		elem.ptr = &last[1];
-		last = &input[loc];
-		elem.n = (size_t) last - elem.ptr;
-		APPEND(lines[line-1], elem, line_len);
-		line_len += 1;
+			goto Delim;
+		} else if (input[loc] == delim) {
+Delim:
+			elem.ptr = &last[1];
+			last = &input[loc];
+			elem.n = (size_t) last - elem.ptr;
+			APPEND(lines[line-1], elem, line_len);
+			line_len += 1;
+		}
 	}
 	return lines;
 }
