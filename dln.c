@@ -1,3 +1,4 @@
+#include "dln.h"
 
 struct newline {
 	char at;
@@ -6,7 +7,7 @@ struct newline {
 
 static struct newline read_newline(char *nl_str)
 {
-	struct newline ret = {'\n', '\0'}
+	struct newline ret = {'\n', '\0'};
 	if ('\n' == *nl_str)
 		return ret;
 	else if (nl_str[1] == '\n' && ((ret.prev = '\r') == *nl_str))
@@ -100,7 +101,7 @@ static unsigned long fast_triangle_root(unsigned long x)
 	}				\
 }
 
-static size_t longquote(char *str, char delim, struct newline nl) {
+static size_t longquote(char delim, struct newline nl, char *str) {
 	unsigned long long found_quotes = 0x0, bloom[4];
 	char *found_vals;
 	size_t i, j, halfmax;
@@ -108,7 +109,7 @@ static size_t longquote(char *str, char delim, struct newline nl) {
 	TRAVERSE(str, {
 	               equals_len++; // equals_len = -1 for single [ or ]
 	               if (equals_len < 64)
-	                  found_quotes[equals_len] |= 1 << equals_len;
+	                  found_quotes |= 1 << equals_len;
 	               else
 	                  for (i = 0; i < 4; ++i)
 	                     bloom[i] |= 1 << ihash(equals_len, i);
@@ -129,12 +130,12 @@ static size_t longquote(char *str, char delim, struct newline nl) {
 
 	//Okay, at this point we know we're being DOS'ed
 	str -= total_len;
-	found_vals = calloc(halfmax / 8 + 1);
+	found_vals = calloc(1, halfmax / 8 + 1);
 	TRAVERSE(str, {
 	               if (equals_len >= halfmax && equals_len < 2 * halfmax)
 	                  found_vals[(equals_len - halfmax) / 8] |= 1 << ((equals_len - halfmax) % 8);
 	              }, );
-	for (i = 0; i < halfmax / 8 + 1; ++i) {
+	for (i = 0; i < halfmax / 8 + 1; ++i)
 		for (j = 0; j < 8; ++j) 
 			if (!(1 << j & found_vals[i]))
 				return halfmax + i * 8 + j;
@@ -142,7 +143,7 @@ static size_t longquote(char *str, char delim, struct newline nl) {
 	return total_len; //should never happen
 }
 
-static void write_quote(char *stream, size_t len, bool left)
+static size_t write_quote(char *stream, size_t len, bool left)
 {
 	if (len) {
 		size_t end = len - 1;
@@ -152,25 +153,40 @@ static void write_quote(char *stream, size_t len, bool left)
 	}
 	return len;
 }
-	
 
-char *encode_dln(char delim, char *newline, char ***items, size_t *rowlens,
-                 size_t numrows) {
-	size_t i, j, ***quotes, len = 2;
+//static void APPEND('T *buf, 'T obj, size_t sz);
+#define APPEND(buf, obj, sz) { \
+	if (!obj) abort(); \
+	if (sz > 7 && !(sz&(sz-1))) { \
+		void *nbuf = realloc(buf, sizeof(*buf) * sz); \
+		if (!nbuf) abort(); \
+		buf = (typeof(buf)) nbuf; \
+	}; \
+	buf[sz] = (typeof(*buf)) obj; \
+}
+
+char *encode_dln(char delim, char *newline, char ***items) {
+	size_t i, j, **quotes, len = 2;
 	char *ret, *lq = NULL, *rq = NULL;
 	struct newline nl = read_newline(newline);
 	if (!nl.at || invalid_delim(delim))
 		return NULL;
 
-	for (i = 0; i < numrows; ++i)
-		for (j = 0; j < rowlens[i]; ++j)
-			len += strlen(itmes[i][j]) + (
-			       quotes[i][j] = longquote(items[i][j])) * 2;
-		
-	ret = calloc(len + 1);
+	quotes = calloc(8, sizeof(*quotes));
+	for (i = 0; items[i]; ++i) {
+		APPEND(quotes, malloc(sizeof(*quotes)), i);
+		quotes[i] = calloc(8, sizeof(*quotes[i]));
+		for (j = 0; items[i][j]; ++j) {
+			APPEND(quotes[i], malloc(sizeof(*quotes[i])), j);
+			len += strlen(items[i][j]) + (
+			       quotes[i][j] = longquote(delim, nl,
+				                        items[i][j])) * 2;
+		}
+	}	
+	ret = calloc(1, len + 1);
 	len = 0;
-	for (i = 0; i < numrows; ++i)
-		for (j = 0; j < rowlens[i]; ++j) {
+	for (i = 0; items[i]; ++i)
+		for (j = 0; items[i][j]; ++j) {
 			if (len) {
 				strncpy(ret + len, &delim, 1);
 				len += 1;
@@ -182,17 +198,6 @@ char *encode_dln(char delim, char *newline, char ***items, size_t *rowlens,
 		}
 	
 	return ret;
-}
-
-//static void APPEND('T *buf, 'T obj, size_t sz);
-#define APPEND(buf, obj, sz) { \
-	if (!obj) abort(errno); \
-	if (sz > 7 && !(sz&(sz-1))) { \
-		void *nbuf = realloc(buf, sizeof(*buf) * sz); \
-		if (!nbuf) abort(errno); \
-		buf = (typeof(buf)) nbuf; \
-	}; \
-	buf[sz] = (typeof(*buf)) obj; \
 }
 
 static DStr read_longstring(char *ls)
@@ -208,7 +213,7 @@ static DStr read_longstring(char *ls)
 			return elem;
 		}
 	}
-	elem.ptr = ls[2];
+	elem.ptr = &ls[2];
 	TRAVERSE(elem.ptr, { 
 		if (equals_len + 2 == quote_len && cur_bracket == ']')
 			elem.n = _str - elem.ptr - quote_len + 1;
@@ -217,10 +222,10 @@ static DStr read_longstring(char *ls)
 	return elem;
 }
 
-Dstr **decode_dln(char *input)
+DStr **decode_dln(char *input)
 {
 	size_t loc, line;
-	Dstr **lines = malloc(8 * sizeof(Dstr *));
+	DStr **lines = malloc(8 * sizeof(DStr *));
 	char delim = input[0], *last;
 	DStr elem, null_dstr = {NULL, 0};
 	struct newline nl = read_newline(&input[1]);
@@ -232,7 +237,8 @@ Dstr **decode_dln(char *input)
 	for (loc = 0; input[loc]; ++loc) {
 		if (last == &input[loc-1]) {
 			if (input[loc] == '[') { //if longstring
-				if (!(elem = read_longstring(&input[loc])).ptr)
+				elem = read_longstring(&input[loc]);
+				if (!elem.ptr)
 					return NULL;
 				APPEND(lines[line-1], elem, line_len);
 				line_len += 1;
@@ -245,7 +251,7 @@ Dstr **decode_dln(char *input)
 			}
 		} else if (is_newline(&input[loc], nl)) {
 			APPEND(lines[line-1], null_dstr, line_len);
-			APPEND(lines, malloc(8 * sizeof(Dstr)), line);
+			APPEND(lines, malloc(8 * sizeof(DStr)), line);
 			line += 1;
 			line_len = 0;
 			goto Delim;

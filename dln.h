@@ -1,9 +1,14 @@
+#include <stdlib.h>
+#include <stdbool.h>
+#include <string.h>
+#include <stdio.h>
+#include <errno.h>
 
-typedef struct Dstr {
+typedef struct DStr {
 	char *ptr;
 	size_t n;
-} Dstr;
+} DStr;
 
-char *encode_dln(char delim, char ***input);
-Dstr **decode_dln(char *input);
+char *encode_dln(char delim, char *newline, char ***input);
+DStr **decode_dln(char *input);
 
