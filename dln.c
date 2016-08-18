@@ -155,16 +155,19 @@ static size_t write_quote(char *stream, size_t len, bool left)
 }
 
 //static void APPEND('T *buf, 'T obj, size_t sz);
-#define APPEND(buf, obj_expr, sz) {				\
-	errno = 0; 						\
-	typeof(*buf) obj = obj_expr;				\
-	if (errno) return NULL;					\
+#define APPEND(buf, obj, sz) {					\
 	if (sz > 7 && !(sz&(sz-1))) {				\
 		void *nbuf = realloc(buf, sizeof(*buf) * sz);	\
-		if (!nbuf) abort();				\
+		if (!nbuf) return NULL;				\
 		buf = (typeof(buf)) nbuf;			\
-	};							\
+	}							\
 	buf[sz] = (typeof(*buf)) obj;				\
+}
+
+#define APPEND_CHECK(buf, obj_expr, sz) {	\
+	typeof(*buf) obj = obj_expr;		\
+	if (!obj) return NULL;			\
+	APPEND(buf, obj, sz)			\
 }
 
 char *encode_dln(char delim, char *newline, char ***items) {
@@ -176,10 +179,11 @@ char *encode_dln(char delim, char *newline, char ***items) {
 
 	quotes = calloc(8, sizeof(*quotes));
 	for (i = 0; items[i]; ++i) {
-		APPEND(quotes, malloc(sizeof(*quotes)), i);
+		APPEND_CHECK(quotes, malloc(sizeof(*quotes)), i);
 		quotes[i] = calloc(8, sizeof(*quotes[i]));
 		for (j = 0; items[i][j]; ++j) {
-			APPEND(quotes[i], longquote(delim, nl, items[i][j]), j);
+			APPEND(quotes[i], 0, j);
+			quotes[i][j] = longquote(delim, nl, items[i][j]);
 			len += strlen(items[i][j]) + 2 * quotes[i][j] + 1;
 		}
 	}	
@@ -209,7 +213,6 @@ static DStr read_longstring(char *ls)
 	} else {
 		for (; ls[1] == '='; ++ls, ++quote_len);
 		if (ls[1] != '[') {
-			errno = EILSEQ;
 			return elem;
 		}
 	}
@@ -230,7 +233,6 @@ DStr **decode_dln(char *input)
 	DStr elem, null_dstr = {NULL, 0};
 	struct newline nl = read_newline(&input[1]);
 	if (!nl.at || invalid_delim(delim)) {
-		errno = EILSEQ;
 		return NULL;
 	}
 	input += 2;
@@ -251,7 +253,7 @@ DStr **decode_dln(char *input)
 			}
 		} else if (is_newline(&input[loc], nl)) {
 			APPEND(lines[line-1], null_dstr, line_len);
-			APPEND(lines, malloc(8 * sizeof(DStr)), line);
+			APPEND_CHECK(lines, malloc(8 * sizeof(DStr)), line);
 			line += 1;
 			line_len = 0;
 			goto Delim;
@@ -266,3 +268,4 @@ Delim:
 	}
 	return lines;
 }
+
